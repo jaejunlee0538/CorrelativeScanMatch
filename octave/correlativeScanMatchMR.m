@@ -6,9 +6,12 @@ function [ Tv, score ] = correlativeScanMatchMR(scan1, scan2, varargin)
     
     args = inputParser;
     args.addParameter('verbose', []);
+    args.addParameter('initGuess',[0 0 0]);
     args.parse(varargin{:});
+    initGuess = args.Results.initGuess;
     if ~isempty(args.Results.verbose)
         fig_handle = args.Results.verbose;
+        clf
         struc_axes.axis1 = subplot(2,2,1); %clf;
         struc_axes.axis2 = subplot(2,2,2); %clf;
         struc_axes.axis3 = subplot(2,2,3); %clf;
@@ -22,26 +25,37 @@ function [ Tv, score ] = correlativeScanMatchMR(scan1, scan2, varargin)
     if corrSMMR_verbose
         axes(struc_axes.axis1);
         plot(scan1(1,:), scan1(2,:), 'k.'); hold on;
-        plot(scan2(1,:), scan2(2,:), 'r.'); hold off;
+        scan2_init = transformScan(scan2, initGuess);
+        plot(scan2_init(1,:), scan2_init(2,:), 'r.'); hold off;
         legend('scan1', 'scan2');
         grid on; axis equal;
     end
     
     %%
-    lookupTableH = getLookupTableH(scan1, 0.3, 0.03);
+    lookupTableH = getLookupTableH(scan1, 0.1, 0.03);
 %     figure(1);subplot(1,2,1);imagesc(lookupTableH.lookup');set(gca,'YDir','normal');
-    lookupTableL = getLookupTableL(lookupTableH,10);
+    lookupTableL = getLookupTableL(lookupTableH, 5);
 %     figure(1);subplot(1,2,2);imagesc(lookupTableL.lookup');set(gca,'YDir','normal');
 
     theta_range = deg2rad([-10, 10]);
-    theta_inc = 0.05
-    [align_L, score_L] = searchBestAlign(lookupTableL, scan2, [0 0 0],...
+    theta_inc = deg2rad(1);
+    [align_L, score_L] = searchBestAlign(lookupTableL, scan2, initGuess,...
      lookupTableL.Xrange, lookupTableL.Yrange,...
-     theta_range, theta_inc);
-    
+     theta_range, theta_inc)
+ 
+    if corrSMMR_verbose
+        axes(struc_axes.axis4);
+        scan2_t = transformScan(scan2, align_L);
+        plot(scan1(1,:), scan1(2,:), 'k.'); hold on;
+        plot(scan2_t(1,:), scan2_t(2,:), 'r.'); hold off;
+        legend('scan1', 'scan2 aligned LOW');
+        grid on;  axis equal; drawnow;
+    end
+%     Tv = align_L;     score = score_L;
+    searchRange = [-lookupTableL.cellSize, lookupTableL.cellSize];
     [Tv, score] = searchBestAlign(lookupTableH, scan2, align_L,...
-        [-1.0 1.0], [-1.0 1.0],...
-        deg2rad([-10 10]), deg2rad(0.2));
+        searchRange, searchRange,...
+        [0 0], deg2rad(0.2));
     
     if corrSMMR_verbose
         axes(struc_axes.axis2);
@@ -49,7 +63,7 @@ function [ Tv, score ] = correlativeScanMatchMR(scan1, scan2, varargin)
         plot(scan1(1,:), scan1(2,:), 'k.'); hold on;
         plot(scan2_t(1,:), scan2_t(2,:), 'r.'); hold off;
         legend('scan1', 'scan2 aligned');
-        grid on;  axis equal;
+        grid on;  axis equal; drawnow;
     end
 end
 
@@ -63,31 +77,36 @@ function [best_align, best_score] = searchBestAlign(lookupTable, scan, initGuess
     global struc_axes;
     
     cellSize = lookupTable.cellSize;
-    thetas = [ThRange(1):dTh:ThRange(2)] + initGuess(3);
-    x_search = [XRange(1):cellSize:XRange(2)] + initGuess(1);
-    y_search = [YRange(1):cellSize:YRange(2)] + initGuess(2);
-    
+    thetas = [ThRange(1):dTh:ThRange(2)] + initGuess(3)
+%     x_search = [XRange(1):cellSize:XRange(2)] + initGuess(1);
+%     y_search = [YRange(1):cellSize:YRange(2)] + initGuess(2);
+    x_search = floor(XRange(1)/cellSize):1:ceil(XRange(2)/cellSize)
+    y_search = floor(YRange(1)/cellSize):1:ceil(YRange(2)/cellSize)
     scoreMap = zeros(size(x_search,2), size(y_search, 2));
     best_score = -10000;
     best_align = [0 0 0];
     for ith = 1:size(thetas, 2)
-        scan_r = rotateScan(scan, thetas(ith));
+        scan_r = rotateScan(scan, thetas(ith)) + repmat([initGuess(1);initGuess(2)],1,size(scan,2));
+        scan_r_idx = pointsToPixels(scan_r, lookupTable);
+
         for ix = 1:size(x_search, 2)
+            idx2d = scan_r_idx + repmat([x_search(ix);y_search(1)-1],1,size(scan_r_idx,2));
+            idx2d(:,idx2d(1,:)<1) = [];
+            idx2d(:,idx2d(1,:)>size(lookupTable.lookup, 1)) = [];
             for iy = 1:size(y_search, 2)
-                tmp = scan_r + repmat([x_search(ix);y_search(iy)], 1, size(scan_r, 2));
-                tmp(:, tmp(1,:) < lookupTable.Xrange(1)) = [];
-                tmp(:, tmp(1,:) > lookupTable.Xrange(2)) = [];
-                tmp(:, tmp(2,:) < lookupTable.Yrange(1)) = [];
-                tmp(:, tmp(2,:) > lookupTable.Yrange(2)) = [];
-                
-                if ~isempty(tmp)
-                    idx2d = pointsToPixels(tmp, lookupTable);
-                    idx1d = idx2d(1,:) + (idx2d(2,:) -1).*size(lookupTable.lookup, 1);
+                idx2d(2,:) = idx2d(2,:) + 1;
+                valid_idx = idx2d;
+                valid_idx(:,valid_idx(2,:)<1) = [];
+                valid_idx(:,valid_idx(2,:)>size(lookupTable.lookup, 2)) = [];
+                if ~isempty(valid_idx)
+                    idx1d = valid_idx(1,:) + (valid_idx(2,:) -1).*size(lookupTable.lookup, 1);
                     score = sum(lookupTable.lookup(idx1d));
                     
                     if best_score < score
                         best_score = score;
-                        best_align = [x_search(ix) y_search(iy) thetas(ith)];
+                        best_align = [cellSize*x_search(ix)+initGuess(1)...
+                            cellSize*y_search(iy)+initGuess(2)...
+                            thetas(ith)];
                         
                         if corrSMMR_verbose
                             axes(struc_axes.axis3); hold off;
